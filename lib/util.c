@@ -19,6 +19,11 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <endian.h>
+
+#include <openssl/hmac.h>
+#include <openssl/evp.h>
 
 #include "util.h"
 #include "groupaccess.h"
@@ -36,6 +41,7 @@ duo_config_default(struct duo_config *cfg)
     cfg->fips_mode = 0;
     cfg->gecos_username_pos = -1;
     cfg->gecos_delim = ',';
+    cfg->offline_secrets_path = strdup(DUO_DEFAULT_OFFLINE_SECRETS_PATH);
 }
 
 int
@@ -63,6 +69,8 @@ duo_common_ini_handler(struct duo_config *cfg, const char *section,
         cfg->cafile = strdup(val);
     } else if (strcmp(name, "http_proxy") == 0) {
         cfg->http_proxy = strdup(val);
+    } else if (strcmp(name, "offline_secrets_path") == 0) {
+        cfg->offline_secrets_path = strdup(val);
     } else if (strcmp(name, "groups") == 0 || strcmp(name, "group") == 0) {
         size_t len = strlen(val);
         size_t i = 0, j = 0;
@@ -201,6 +209,10 @@ close_config(struct duo_config *cfg)
     if (cfg->http_proxy != NULL) {
         duo_zero_free(cfg->http_proxy, strlen(cfg->http_proxy));
         cfg->http_proxy = NULL;
+    }
+    if (cfg->offline_secrets_path != NULL) {
+        duo_zero_free(cfg->offline_secrets_path, strlen(cfg->offline_secrets_path));
+        cfg->offline_secrets_path = NULL;
     }
     cleanup_config_groups(cfg);
 }
@@ -357,4 +369,123 @@ duo_zero_free(void *ptr, size_t size)
 #endif
         free(ptr);
     }
+}
+
+static int
+compute_hmac_sha1(const unsigned char *key, int key_len,
+                  const unsigned char *data, int data_len,
+                  unsigned char *hmac_out)
+{
+    unsigned int hmac_len;
+
+    if (!HMAC(EVP_sha1(), key, key_len, data, data_len, hmac_out, &hmac_len)) {
+        return -1;
+    }
+
+    return hmac_len;
+}
+
+unsigned char *
+duo_base32_decode(const char *encoded, int *output_len)
+{
+    int len = strlen(encoded);
+    int i, j, bits, value;
+    unsigned char *result;
+
+    if (!encoded || len == 0 || len > BASE32_INPUT_SIZE_LIMIT) {
+        *output_len = 0;
+        return NULL;
+    }
+
+    *output_len = (len * 5) / 8;
+
+    result = malloc(*output_len);
+    if (!result) {
+        return NULL;
+    }
+
+    bits = 0;
+    value = 0;
+    j = 0;
+
+    for (i = 0; i < len; i++) {
+        char c = encoded[i];
+
+        /* Fast mathematical Base32 character decode */
+        int val;
+        if (c == ' ' || c == '-') {
+            continue;                   /* Skip separators */
+        } else if (c >= 'A' && c <= 'Z') {
+            val = c - 'A';              /* A-Z → 0-25 */
+        } else if (c >= '2' && c <= '7') {
+            val = c - '2' + 26;         /* 2-7 → 26-31 */
+        } else {
+            free(result);
+            return NULL;
+        }
+
+        value = (value << 5) | val;
+        bits += 5;
+
+        if (bits >= 8) {
+            result[j++] = (value >> (bits - 8)) & 0xFF;
+            bits -= 8;
+        }
+    }
+
+    *output_len = j;
+    return result;
+}
+
+uint32_t
+duo_compute_totp_code(const unsigned char *secret, int secret_len, uint64_t timestamp)
+{
+    unsigned char hmac_result[EVP_MAX_MD_SIZE];
+    uint64_t counter = htobe64(timestamp);
+    int hmac_len;
+
+    hmac_len = compute_hmac_sha1(secret, secret_len,
+                                (unsigned char *)&counter, sizeof counter,
+                                hmac_result);
+    if (hmac_len < 0) {
+        return 0;
+    }
+
+    int offset = hmac_result[hmac_len - 1] & 0x0F;
+    uint32_t code = ((hmac_result[offset] & 0x7F) << 24) |
+                    ((hmac_result[offset + 1] & 0xFF) << 16) |
+                    ((hmac_result[offset + 2] & 0xFF) << 8) |
+                    (hmac_result[offset + 3] & 0xFF);
+
+    return code % 1000000; /* 10^6 for 6-digit TOTP codes */
+}
+
+int
+duo_verify_totp_code(const char *secret, uint32_t code, time_t current_time)
+{
+    unsigned char *decoded_secret;
+    int secret_len;
+    const int seconds_per_step = 30;
+    const int window_steps = 8; /* +/-2 minutes security window */
+    uint64_t time_step = current_time / seconds_per_step;
+    uint64_t start_step, end_step;
+
+    decoded_secret = duo_base32_decode(secret, &secret_len);
+    if (!decoded_secret) {
+        return 0;
+    }
+
+    start_step = time_step - window_steps / 2;
+    end_step = time_step + window_steps / 2 + 1;
+
+    for (uint64_t step = start_step; step < end_step; step++) {
+        uint32_t expected_code = duo_compute_totp_code(decoded_secret, secret_len, step);
+        if (expected_code == code) {
+            free(decoded_secret);
+            return 1;
+        }
+    }
+
+    free(decoded_secret);
+    return 0; /* Invalid code */
 }

@@ -16,6 +16,10 @@ if PAM
 SUBDIRS += pam_duo
 endif
 
+if HAVE_OFFLINE_LOGIN
+SUBDIRS += duo_offline_enroll
+endif
+
 SUBDIRS += tests
 SUBDIRS += tests/unity_tests
 

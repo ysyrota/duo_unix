@@ -1,0 +1,76 @@
+.Dd August 31, 2025
+.Dt DUO_OFFLINE_ENROLL 8
+.Os
+.Sh NAME
+.Nm duo_offline_enroll
+.Nd Duo offline login enrollment tool
+.Sh SYNOPSIS
+.Nm
+.Op Fl c Ar config
+.Op Fl i Ar ikey
+.Op Fl s Ar skey
+.Op Fl h Ar host
+.Op Fl o Ar file
+.Op Fl v
+.Ar username
+.Sh DESCRIPTION
+.Nm
+enrolls users for Duo offline authentication by generating a QR code that can be scanned with Duo Mobile.
+The tool displays the QR code on the terminal and prompts for verification to confirm successful enrollment.
+.Pp
+The following options are available:
+.Bl -tag -width ".Fl c"
+.It Fl c Ar config
+Use alternate configuration file (default: /etc/duo/pam_duo.conf)
+.It Fl i Ar ikey
+Duo integration key (overrides config file)
+.It Fl s Ar skey
+Duo secret key (overrides config file)
+.It Fl h Ar host
+Duo API hostname (overrides config file)
+.It Fl o Ar file
+Write QR code to PBM image file instead of displaying on terminal
+.It Fl v
+Show version information and exit
+.El
+.Pp
+The
+.Ar username
+argument specifies the user to enroll and is required.
+.Sh CONFIGURATION
+Configuration file must contain a
+.Dq duo
+section with required Duo API credentials:
+.Bd -literal -offset 4n
+[duo]
+host = api-xxxxxxxx.duosecurity.com
+ikey = DIXXXXXXXXXXXXXXXXXX
+skey = deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+.Ed
+.Sh FILES
+.Bl -tag -width ".Pa /etc/duo/pam_duo.conf"
+.It Pa /etc/duo/pam_duo.conf
+Default configuration file
+.El
+.Sh EXAMPLES
+Basic enrollment:
+.Bd -literal -offset 4n
+duo_offline_enroll alice
+.Ed
+.Pp
+Enrollment with explicit credentials:
+.Bd -literal -offset 4n
+duo_offline_enroll -i DIXXXXXXXXXXXXXXXXXX \\
+    -s deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \\
+    -h api-xxxxxxxx.duosecurity.com alice
+.Ed
+.Pp
+Save QR code to file:
+.Bd -literal -offset 4n
+duo_offline_enroll -o qrcode.pbm alice
+.Ed
+.Sh SEE ALSO
+.Xr login_duo 8 ,
+.Xr pam_duo 8
+.Sh AUTHORS
+.An "Cisco Systems, Inc."

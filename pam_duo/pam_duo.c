@@ -61,8 +61,9 @@
 #include "util.h"
 #include "duo.h"
 #include "groupaccess.h"
-#include "pam_extra.h"
 #include "pam_duo_private.h"
+#include "pam_duo_offline.h"
+#include "pam_extra.h"
 
 #ifndef PAM_EXTERN
 #define PAM_EXTERN
@@ -103,6 +104,89 @@ __duo_prompt(void *arg, const char *prompt, char *buf, size_t bufsz)
     strlcpy(buf, p, bufsz);
     free(p);
     return (buf);
+}
+
+static int
+__duo_offline_auth(pam_handle_t *pamh, struct duo_config *cfg, const char *user)
+{
+    struct offline_user *offline_user;
+    char *passcode_str = NULL;
+    uint32_t passcode;
+    offline_auth_result_t result;
+    time_t current_time;
+    int pam_err = PAM_AUTH_ERR;
+
+    if (!cfg->offline_secrets_path) {
+        duo_syslog(LOG_DEBUG, "Offline authentication not configured (no offline_secrets_path)");
+        return PAM_AUTH_ERR;
+    }
+
+    if (!is_offline_available(cfg->offline_secrets_path, user)) {
+        duo_syslog(LOG_DEBUG, "User %s not enrolled for offline authentication", user);
+        return PAM_AUTH_ERR;
+    }
+
+    offline_user = load_offline_user(cfg->offline_secrets_path, user);
+    if (!offline_user) {
+        duo_syslog(LOG_ERR, "Failed to load offline data for user %s", user);
+        return PAM_AUTH_ERR;
+    }
+
+    if (pam_prompt(pamh, PAM_PROMPT_ECHO_ON, &passcode_str,
+                   "Duo offline passcode: ") != PAM_SUCCESS || passcode_str == NULL) {
+        duo_syslog(LOG_ERR, "Failed to get offline passcode from user %s", user);
+        free_offline_user(offline_user);
+        return PAM_AUTH_ERR;
+    }
+
+    if (strlen(passcode_str) != TOTP_CODE_DIGITS ||
+        strspn(passcode_str, "0123456789") != TOTP_CODE_DIGITS) {
+        duo_syslog(LOG_WARNING, "Invalid offline passcode format from user %s", user);
+        free(passcode_str);
+        free_offline_user(offline_user);
+        return PAM_AUTH_ERR;
+    }
+
+    passcode = (uint32_t)atol(passcode_str);
+    free(passcode_str);
+
+    current_time = time(NULL);
+    result = verify_offline_totp(offline_user, passcode, current_time);
+
+    switch (result) {
+    case OFFLINE_AUTH_SUCCESS:
+        if (update_offline_user_auth_time(cfg->offline_secrets_path, offline_user, user) == 0) {
+            duo_syslog(LOG_INFO, "Successful offline authentication for user %s", user);
+            pam_err = PAM_SUCCESS;
+        } else {
+            duo_syslog(LOG_ERR, "Failed to update offline auth time for user %s", user);
+            pam_err = PAM_AUTH_ERR;
+        }
+        break;
+
+    case OFFLINE_AUTH_INVALID_CODE:
+        duo_syslog(LOG_WARNING, "Invalid offline passcode for user %s", user);
+        break;
+
+    case OFFLINE_AUTH_TIME_TRAVEL:
+        duo_syslog(LOG_WARNING, "Time travel detected in offline auth for user %s", user);
+        break;
+
+    case OFFLINE_AUTH_REPLAY_ATTACK:
+        duo_syslog(LOG_WARNING, "Replay attack detected in offline auth for user %s", user);
+        break;
+
+    case OFFLINE_AUTH_USER_NOT_ENROLLED:
+        duo_syslog(LOG_DEBUG, "User %s not enrolled for offline authentication", user);
+        break;
+
+    default:
+        duo_syslog(LOG_ERR, "Offline authentication error for user %s: %d", user, result);
+        break;
+    }
+
+    free_offline_user(offline_user);
+    return pam_err;
 }
 
 PAM_EXTERN int
@@ -266,6 +350,15 @@ pam_sm_authenticate(pam_handle_t *pamh, int pam_flags,
                     "pam_duo/" PACKAGE_VERSION,
                     cfg.noverify ? "" : cfg.cafile, cfg.https_timeout, cfg.http_proxy)) == NULL) {
         duo_log(LOG_ERR, "Couldn't open Duo API handle", pw->pw_name, host, NULL);
+        if (cfg.offline_secrets_path && is_offline_available(cfg.offline_secrets_path, user)) {
+            duo_log(LOG_INFO, "Attempting offline authentication fallback", pw->pw_name, host, NULL);
+            pam_err = __duo_offline_auth(pamh, &cfg, user);
+            if (pam_err == PAM_SUCCESS) {
+                close_config(&cfg);
+                return PAM_SUCCESS;
+            }
+        }
+
         close_config(&cfg);
         return (PAM_SERVICE_ERR);
     }
@@ -312,8 +405,34 @@ pam_sm_authenticate(pam_handle_t *pamh, int pam_flags,
                 user, host, duo_geterr(duo));
             pam_err = PAM_SUCCESS;
         } else if (code == DUO_FAIL_SECURE_DENY) {
-            duo_log(LOG_WARNING, "Failsecure Duo login",
-                user, host, duo_geterr(duo));
+            if (cfg.offline_secrets_path && is_offline_available(cfg.offline_secrets_path, user)) {
+                duo_log(LOG_WARNING, "Failsecure Duo login, trying offline fallback",
+                    user, host, duo_geterr(duo));
+                pam_err = __duo_offline_auth(pamh, &cfg, user);
+                if (pam_err == PAM_SUCCESS) {
+                    break;
+                }
+                duo_log(LOG_ERR, "Offline authentication fallback failed",
+                    user, host, NULL);
+            } else {
+                duo_log(LOG_WARNING, "Failsecure Duo login",
+                    user, host, duo_geterr(duo));
+            }
+            pam_err = PAM_SERVICE_ERR;
+        } else if (code == DUO_CONN_ERROR) {
+            if (cfg.offline_secrets_path && is_offline_available(cfg.offline_secrets_path, user)) {
+                duo_log(LOG_WARNING, "Duo connection error, trying offline fallback",
+                    user, host, duo_geterr(duo));
+                pam_err = __duo_offline_auth(pamh, &cfg, user);
+                if (pam_err == PAM_SUCCESS) {
+                    break;
+                }
+                duo_log(LOG_ERR, "Offline authentication fallback failed",
+                    user, host, NULL);
+            } else {
+                duo_log(LOG_WARNING, "Duo connection error",
+                    user, host, duo_geterr(duo));
+            }
             pam_err = PAM_SERVICE_ERR;
         } else {
             duo_log(LOG_ERR, "Error in Duo login",

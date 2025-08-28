@@ -223,6 +223,23 @@ AC_DEFINE_UNQUOTED(DUO_PRIVSEP_USER, "$DUO_PRIVSEP_USER",
 	[Dedicated user for privilege separation])
 AC_SUBST(DUO_PRIVSEP_USER)
 
+# Check for offline login support
+AC_ARG_ENABLE([offline-login],
+  AS_HELP_STRING([--enable-offline-login], [Enable offline login support [default=no]]),
+  [],
+  [enable_offline_login=no])
+
+AS_IF([test "x$enable_offline_login" = "xyes"], [
+  AC_DEFINE([HAVE_OFFLINE_LOGIN], [1], [Offline login support])
+
+  # Check for libqrencode
+  AC_CHECK_LIB([qrencode], [QRcode_encodeString], [], [
+    AC_MSG_ERROR([libqrencode is required for offline login support])
+  ])
+])
+
+AM_CONDITIONAL([HAVE_OFFLINE_LOGIN], [test "x$enable_offline_login" = "xyes"])
+
 # Multilib foo
 AC_ARG_ENABLE(lib64,
 [ --enable-lib64=[yes/no] Enable lib64 support [default=yes]],,
@@ -248,6 +265,6 @@ AC_REPLACE_FUNCS([asprintf getgrouplist strlcpy vsyslog strnlen timegm])
 AC_SEARCH_LIBS(inet_ntoa, nsl)
 AC_SEARCH_LIBS(socket, socket)
 
-AC_CONFIG_FILES(Makefile compat/Makefile duo_unix_support/Makefile lib/Makefile lib/libduo.pc login_duo/Makefile pam_duo/Makefile tests/Makefile tests/unity_tests/Makefile tests/unity_tests/Unity-2.5.2/Makefile)
+AC_CONFIG_FILES(Makefile compat/Makefile duo_unix_support/Makefile lib/Makefile lib/libduo.pc login_duo/Makefile pam_duo/Makefile duo_offline_enroll/Makefile tests/Makefile tests/unity_tests/Makefile tests/unity_tests/Unity-2.5.2/Makefile)
 
 AC_OUTPUT

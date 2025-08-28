@@ -9,7 +9,7 @@
 
 
 AM_CPPFLAGS = -I$(top_srcdir)/compat -I$(top_srcdir)/lib @OPENSSL_INCLUDES@
-SOURCES = pam_duo.c pam_extra.h pam_extra.c pam_duo_private.c pam_duo_private.h
+SOURCES = pam_duo.c pam_extra.h pam_extra.c pam_duo_private.c pam_duo_private.h pam_duo_offline.c pam_duo_offline.h
 LIBADD = $(top_builddir)/lib/libduo.la $(top_builddir)/compat/libcompat.la @OPENSSL_LDFLAGS@ @OPENSSL_LIBS@ -lpam
 LDFLAGS = -module -no-undefined -avoid-version -shared -export-symbols-regex '^pam_sm_'
 

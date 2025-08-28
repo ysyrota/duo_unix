@@ -12,10 +12,16 @@
 
 #define MAX_GROUPS 256
 #define MAX_PROMPTS 3
+#define DUO_DEFAULT_OFFLINE_SECRETS_PATH "/var/duo"
+
+/* Base32 constants for TOTP secrets */
+#define BASE32_INPUT_SIZE_LIMIT 10000
 
 #include <pwd.h>
 #include <syslog.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <time.h>
 
 extern int duo_debug;
 
@@ -30,6 +36,7 @@ struct duo_config {
     char *apihost;
     char *cafile;
     char *http_proxy;
+    char *offline_secrets_path;  /* pam_duo only */
     char *groups[MAX_GROUPS];
     char gecos_delim;
     int  groups_cnt;
@@ -76,6 +83,14 @@ void duo_log(
 );
 
 void duo_syslog(int priority, const char *fmt, ...);
+
+/* TOTP and Base32 functions for offline authentication */
+
+#define TOTP_CODE_DIGITS 6
+
+unsigned char *duo_base32_decode(const char *encoded, int *output_len);
+uint32_t duo_compute_totp_code(const unsigned char *secret, int secret_len, uint64_t timestamp);
+int duo_verify_totp_code(const char *secret, uint32_t code, time_t current_time);
 
 const char *duo_resolve_name(const char *hostname);
 
